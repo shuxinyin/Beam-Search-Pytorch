@@ -24,14 +24,14 @@ class DecoderRNN(nn.Module):
         self.dropout_rate = dropout
         self.linear = nn.Linear(hidden_size * 2, output_size)
 
-    def forward(self, input, hidden, not_used=None):
+    def forward(self, input, hidden, encoder_outputs):
         embedded = self.embedding(input).transpose(0, 1)  # [B,1] -> [ 1, B, D]
         embedded = F.dropout(embedded, self.dropout_rate)
 
         # output: [sequence_length, batch_size, input_size]
         # hidden: [D*num_layer, batch_size, hidden_size]
         output = embedded
-        print(output.shape, hidden.shape)
+        print("rnn input ", output.shape, hidden.shape)
 
         # output: [sequence_length, batch_size, D*hidden_size]
         # hidden: [D*num_layer, N, hidden_size]
@@ -65,7 +65,7 @@ class BeamSearchNode(object):
         return self.logp / float(self.leng - 1 + 1e-6) + alpha * reward
 
 
-def beam_decode(target_tensor, decoder_hiddens, encoder_outputs=None):
+def beam_decode(target_tensor, decoder_hiddens, encoder_outputs):
     '''
     :param target_tensor: target indexes tensor of shape [B, T] where B is the batch size and T is the maximum length of the output sentence
     :param decoder_hidden: input tensor of shape [1, B, H] for start of the decoding
@@ -82,9 +82,10 @@ def beam_decode(target_tensor, decoder_hiddens, encoder_outputs=None):
         if isinstance(decoder_hiddens, tuple):  # LSTM case
             decoder_hidden = (decoder_hiddens[0][:, idx, :].unsqueeze(0), decoder_hiddens[1][:, idx, :].unsqueeze(0))
         else:
-            decoder_hidden = decoder_hiddens[:, idx, :].unsqueeze(0)
+            decoder_hidden = decoder_hiddens[:, idx, :].unsqueeze(1)
+            print(decoder_hidden.shape)
         encoder_output = encoder_outputs[:, idx, :].unsqueeze(1)
-
+        # sys.exit()
         # Start with the start of the sentence token
         decoder_input = torch.LongTensor([[SOS_token]], device=device)
 
@@ -93,6 +94,7 @@ def beam_decode(target_tensor, decoder_hiddens, encoder_outputs=None):
         number_required = min((topk + 1), topk - len(endnodes))
 
         # starting node -  hidden vector, previous node, word id, logp, length
+        print("____", decoder_hidden.shape, decoder_input.shape)
         node = BeamSearchNode(decoder_hidden, None, decoder_input, 0, 1)
         nodes = PriorityQueue()
 
@@ -119,6 +121,7 @@ def beam_decode(target_tensor, decoder_hiddens, encoder_outputs=None):
                     continue
 
             # decode for one step using decoder
+            print("---", decoder_input.shape, decoder_hidden.shape, encoder_output.shape)
             decoder_output, decoder_hidden = decoder(decoder_input, decoder_hidden, encoder_output)
 
             # PUT HERE REAL BEAM SEARCH OF TOP
@@ -170,33 +173,43 @@ def greedy_decode(decoder_hidden, target_tensor, encoder_outputs=None):
     '''
     batch_size, seq_len = target_tensor.size()
     decoded_batch = torch.zeros((batch_size, MAX_LENGTH))
+    # last word decoded is the input for next
     decoder_input = torch.LongTensor([[SOS_token] for _ in range(batch_size)], device=device)
 
     for t in range(MAX_LENGTH):
+        print(f"decoder_input {decoder_input}")
+
         decoder_output, decoder_hidden = decoder(decoder_input, decoder_hidden, encoder_outputs)
         print(f"decoder_output, decoder_hidden {decoder_output.shape}， {decoder_hidden.shape}")
 
         topv, topi = decoder_output.data.topk(1)  # get candidates
         print(topi)
         topi = topi.view(-1)
-        print(topi)
         decoded_batch[:, t] = topi
 
         decoder_input = topi.detach().view(-1, 1)
+        print(decoder_input.shape)
 
     return decoded_batch
 
 
 def test_greedy_decode():
     target_tensor = torch.from_numpy(np.random.randint(100, size=[2, 16]))  # (B, seq_len)
+    print(target_tensor)
     # hidden: [D*num_layer, batch_size, hidden_size]
     decoder_hidden = torch.randn(2, 2, 312)
-    # out, hidden = decoder(input_tensor, hidden_state)
 
     decoded_batch = greedy_decode(decoder_hidden, target_tensor)
     print(f"decoded_batch: {decoded_batch.shape}")
-    print(f"decoded_batch: {decoded_batch}")
 
+
+def test_beam_search():
+    target_tensor = torch.from_numpy(np.random.randint(100, size=[2, 16]))  # (B, max_seq_len)
+
+    decoder_hidden = torch.randn(2, 2, 312)  # hidden: [1, batch_size, hidden_size]
+    encoder_outputs = torch.randn(16, 2, 312)  # encoder_outputs: [max_seq_len, batch_size, hidden_size]
+    decoded_batch = beam_decode(target_tensor, decoder_hidden, encoder_outputs=encoder_outputs)
+    print(f"decoded_batch: {decoded_batch}")
 
 
 def test_rnn():
@@ -222,12 +235,8 @@ if __name__ == '__main__':
 
     SOS_token = 0
     EOS_token = 1
-    MAX_LENGTH = 50
+    MAX_LENGTH = 2
     decoder = DecoderRNN(embedding_size=768, hidden_size=312, output_size=256)
 
-    # input_tensor = torch.from_numpy(np.random.randint(100, size=[2, 16]))  # (B, seq_len)
-    # # hidden: [D*num_layer, batch_size, hidden_size]
-    # hidden_state = torch.randn(2, 2, 312)
-    # out, hidden = decoder(input_tensor, hidden_state)
-
     test_greedy_decode()
+    # test_beam_search()
